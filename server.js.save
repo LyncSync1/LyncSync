@@ -1,0 +1,131 @@
+require('dotenv').config();
+const express = require('express');
+const axios = require('axios');
+
+const app = express();
+app.use(express.json());
+
+const SPOTIFY_TOKEN_URL = 'https://accounts.spotify.com/api/token';
+const YOUTUBE_SEARCH_URL = 'https://www.googleapis.com/youtube/v3/videos';
+
+/**
+ * Extracts song title & artist from YouTube Music URL
+ */
+async function getYouTubeSongInfo(youtubeUrl) {
+    const videoId = youtubeUrl.split("v=")[1]?.split("&")[0];
+    if (!videoId) {
+        console.error("Invalid YouTube URL: No video ID found.");
+        return null;
+    }
+
+    try {
+        const response = await axios.get(YOUTUBE_SEARCH_URL, {
+            params: {
+                key: process.env.YOUTUBE_API_KEY,
+                id: videoId,
+                part: 'snippet'
+            }
+        });
+
+        console.log("YouTube API Response:", JSON.stringify(response.data, null, 2));
+
+        const video = response.data.items[0];
+        if (!video) {
+            console.error("No video found for this ID.");
+            return null;
+        }
+
+        const title = video.snippet.title;
+        let artist = null;
+
+        // Try extracting the artist from tags
+        if (video.snippet.tags && video.snippet.tags.length > 0) {
+            artist = video.snippet.tags[0]; // The first tag is usually the artist name
+        }
+
+        // Fallback: Remove "- Topic" from channel name if tags are missing
+        if (!artist) {
+            artist = video.snippet.channelTitle.replace(/ - Topic$/, "").trim();
+        }
+
+        console.log(`Extracted Title: ${title}`);
+        console.log(`Extracted Artist: ${artist}`);
+
+        return `${title} ${artist}`;
+    } catch (error) {
+        console.error("YouTube API Error:", error.response ? error.response.data : error.message);
+        return null;
+    }
+}
+
+/**
+ * Searches for the song on Spotify and returns the best match URL
+ */
+async function getSpotifyLink(songQuery) {
+    try {
+        // Get Spotify API access token
+        const authResponse = await axios.post(SPOTIFY_TOKEN_URL,
+            new URLSearchParams({ grant_type: 'client_credentials' }),
+            {
+                headers: {
+                    'Authorization': `Basic ${Buffer.from(`${process.env.SPOTIFY_CLIENT_ID}:${process.env.SPOTIFY_CLIENT_SECRET}`).toString('base64')}`,
+                    'Content-Type': 'application/x-www-form-urlencoded'
+                }
+            }
+        );
+        const accessToken = authResponse.data.access_token;
+
+        // Search for the song on Spotify
+        const searchResponse = await axios.get(`https://api.spotify.com/v1/search`, {
+            headers: { 'Authorization': `Bearer ${accessToken}` },
+            params: { q: `"${songQuery}"`, type: 'track', limit: 1 }
+        });
+
+        if (!searchResponse.data.tracks.items.length) {
+            console.error(`No results found on Spotify for "${songQuery}"`);
+            return null;
+        }
+
+        const spotifyLink = searchResponse.data.tracks.items[0].external_urls.spotify;
+        console.log(`Found Spotify Link: ${spotifyLink}`);
+
+        return spotifyLink;
+    } catch (error) {
+        console.error("Spotify API Error:", error.response ? error.response.data : error.message);
+        return null;
+    }
+}
+
+/**
+ * API Endpoint: Convert YouTube Music link to Spotify link
+ */
+app.post('/convert-youtube', async (req, res) => {
+    const { youtubeUrl } = req.body;
+    if (!youtubeUrl) {
+        return res.status(400).json({ error: 'YouTube URL is required' });
+    }
+
+    console.log(`Received YouTube URL: ${youtubeUrl}`);
+
+    try {
+        const songQuery = await getYouTubeSongInfo(youtubeUrl);
+        if (!songQuery) {
+            return res.status(400).json({ error: 'Invalid YouTube URL' });
+        }
+
+        const spotifyLink = await getSpotifyLink(songQuery);
+        if (!spotifyLink) {
+            return res.status(404).json({ error: 'No matching Spotify song found' });
+        }
+
+        res.json({ spotifyLink });
+    } catch (error) {
+        console.error("Server Error:", error);
+        res.status(500).json({ error: 'Something went wrong' });
+    }
+});
+
+// Start the server
+const PORT = 3000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+nano server.js
